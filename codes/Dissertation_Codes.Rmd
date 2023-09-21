@@ -1,0 +1,660 @@
+---
+title: "Codes for Dissertation: Hawkes Processes Modelling of the COVID-19 Pandemic in Israel Using Whittle Estimation Method"
+author: "Jia Xin Lin"
+output: pdf_document
+---
+# Whole Israel
+## Data cleaning and manipulation
+```{r setup_data_cleaning, include=FALSE, message=FALSE, warning=FALSE, echo=FALSE}
+#Packages used
+library(rio)
+library(dplyr)
+library(ggplot2)
+library(grid)
+library(hawkesbow)
+library(foreach)
+library(doParallel)
+library(SuperGauss)
+
+#Source from Cheysson's GitHub: https://github.com/fcheysson/code-spectral-hawkes/tree/master/case%20study
+source("whittle_periodogram.R")
+
+#Importing data
+geo = import("geographic_data_copy.csv", setclass = "tibble")
+#Filtering out the twon names in Hebrew
+geo2 <- geo[-3]
+
+
+#Checking NA-s
+sapply(geo2, function(x) sum(is.na(x)))
+# 305240 NA-s in agas_code
+
+#Summary about the data set
+summary(geo2)
+```
+
+```{r creating_variables, message=FALSE, warning=FALSE, echo=FALSE}
+#Creating variables for Cases: new_cases_per_day AND seven_day_avg_case
+geo_cases <- select(geo2, town_code, date, accumulated_cases, new_cases_on_date)
+geo_cases$accumulated_cases[geo_cases$accumulated_cases == '<15'] <- 15
+geo_cases$accumulated_cases <- as.numeric(geo_cases$accumulated_cases)
+geo_cases_date <- geo_cases %>% group_by(date) %>% 
+  summarise(sum_acc_cases = sum(accumulated_cases),
+            .groups = 'drop')
+geo_cases_date$new_cases_per_day <- geo_cases_date$sum_acc_cases
+for (i in 2:length(geo_cases_date$sum_acc_cases)) {
+  geo_cases_date$new_cases_per_day[i] <- geo_cases_date$sum_acc_cases[i]-geo_cases_date$sum_acc_cases[i-1]
+}
+geo_cases_date$seven_day_avg_case <- geo_cases_date$new_cases_per_day
+for (i in 7:length(geo_cases_date$new_cases_per_day)) {
+  geo_cases_date$seven_day_avg_case[i] <- (geo_cases_date$new_cases_per_day[i]+geo_cases_date$new_cases_per_day[i-1]+geo_cases_date$new_cases_per_day[i-2]+geo_cases_date$new_cases_per_day[i-3]+geo_cases_date$new_cases_per_day[i-4]+geo_cases_date$new_cases_per_day[i-5]+geo_cases_date$new_cases_per_day[i-6])/7
+}
+
+#Creating variables for Mortality: new_deaths_per_day AND seven_day_avg_death
+geo_deaths <- select(geo2, town_code, date, accumulated_deaths, new_deaths_on_date)
+geo_deaths$accumulated_deaths[geo_deaths$accumulated_deaths == '<15'] <- 15
+geo_deaths$accumulated_deaths <- as.numeric(geo_deaths$accumulated_deaths)
+geo_deaths_date <- geo_deaths %>% group_by(date) %>% 
+  summarise(sum_acc_deaths = sum(accumulated_deaths),
+            .groups = 'drop')
+geo_deaths_date$new_deaths_per_day <- geo_deaths_date$sum_acc_deaths
+for (i in 2:length(geo_deaths_date$sum_acc_deaths)) {
+  geo_deaths_date$new_deaths_per_day[i] <- geo_deaths_date$sum_acc_deaths[i]-geo_deaths_date$sum_acc_deaths[i-1]
+}
+geo_deaths_date$seven_day_avg_death <- geo_deaths_date$new_deaths_per_day
+for (i in 7:length(geo_deaths_date$new_deaths_per_day)) {
+  geo_deaths_date$seven_day_avg_death[i] <- (geo_deaths_date$new_deaths_per_day[i]+geo_deaths_date$new_deaths_per_day[i-1]+geo_deaths_date$new_deaths_per_day[i-2]+geo_deaths_date$new_deaths_per_day[i-3]+geo_deaths_date$new_deaths_per_day[i-4]+geo_deaths_date$new_deaths_per_day[i-5]+geo_deaths_date$new_deaths_per_day[i-6])/7
+}
+```
+
+## Making Plots: daily_cases_deaths_Israel
+```{r plots_whole, message=FALSE, warning=FALSE, echo=FALSE, fig.width=18, fig.height=6}
+#All Cases
+NewCase_Date <- geo_cases_date %>%
+        ggplot(aes(x = date)) + 
+        geom_bar(aes(y = new_cases_per_day, fill = "Number of cases"),stat = "identity") +
+        xlab("Date") + ylab("Daily Cases") +
+        ggtitle("Cases in Israel (11 March 2020 - 28 May 2023)") +
+        theme(plot.title = element_text(lineheight=.8, face="bold"))  +
+        geom_line(aes(y=seven_day_avg_case, colour = "Cases (7-day average)"), size = 1.2, alpha = 0.85) +
+        scale_fill_manual(name = "", values = c("Number of cases" = "orange2")) +
+        scale_colour_manual(name = "", values = c("Cases (7-day average)" = "sienna")) +
+        scale_x_date(date_breaks = "3 month",
+                     date_minor_breaks = "1 month", date_labels = "%b-%y")
+
+#All Deaths
+Death_Date <- geo_deaths_date %>%
+            ggplot(aes(x = date))+
+            geom_bar(aes(y = new_deaths_per_day ,fill = "Number of Deaths"),stat = "identity", position = "stack") +
+            geom_line(aes(y=seven_day_avg_death, colour = "Deaths (7-day average)"), size = 1.2, alpha = 0.9) +
+            xlab("Date")+ylab("Daily Deaths") +
+            ggtitle("Deaths in Israel (11 March 2020 - 28 May 2023)") +
+            theme(plot.title = element_text(lineheight=.8, face="bold"))+
+            scale_fill_manual(name = "", values = c("Number of Deaths" = "firebrick3"))+
+            scale_colour_manual(name = "", values = c("Deaths (7-day average)" = "darkred"))+
+            scale_x_date(date_breaks = "3 month",
+                         date_minor_breaks = "1 month", date_labels = "%b-%y")
+
+#Saving as png
+grid.newpage()
+Case_Death <- arrangeGrob(cbind(ggplotGrob(NewCase_Date + theme(legend.position="none")), ggplotGrob(Death_Date+ theme(legend.position="none")), size = "last"))
+grid.draw(Case_Death)
+ggsave("Case_Death.png", Case_Death, width = 50, height = 17, units = "cm")
+
+
+#First Wave: Feb - May 2020
+#Cases
+geo_cases_date1 <- geo_cases_date %>%
+                   filter(date < '2020-5-16')
+NewCase_Date1 <- geo_cases_date1 %>%
+        ggplot(aes(x = date)) +
+        geom_bar(aes(y = new_cases_per_day, fill = "Number of cases"),stat = "identity") +
+        xlab("Date") + ylab("Daily Cases") +
+        ggtitle("Cases in Israel (Feb - May 2020)") +
+        theme(plot.title = element_text(lineheight=.8, face="bold"))  +
+        geom_line(aes(y=seven_day_avg_case, colour = "Cases (7-day average)"), size = 1.2, alpha = 0.85) +
+        scale_fill_manual(name = "", values = c("Number of cases" = "orange2")) +
+        scale_colour_manual(name = "", values = c("Cases (7-day average)" = "sienna")) +
+        scale_x_date(date_breaks = "1 week",
+                     date_minor_breaks = "1 week", date_labels = "%d-%b")
+
+#Mortality
+geo_deaths_date1 <- geo_deaths_date %>%
+                   filter(date < '2020-5-16')
+Death_Date1 <- geo_deaths_date1 %>%
+            ggplot(aes(x = date))+
+            geom_bar(aes(y = new_deaths_per_day ,fill = "Number of Deaths"),stat = "identity", position = "stack") +
+            geom_line(aes(y=seven_day_avg_death, colour = "Deaths (7-day average)"), size = 1.2, alpha = 0.9) +
+            xlab("Date")+ylab("Daily Deaths") +
+            ggtitle("Deaths in Israel (Feb - May 2020)") +
+            theme(plot.title = element_text(lineheight=.8, face="bold"))+
+            scale_fill_manual(name = "", values = c("Number of Deaths" = "firebrick3"))+
+            scale_colour_manual(name = "", values = c("Deaths (7-day average)" = "darkred"))+
+            scale_x_date(date_breaks = "1 week",
+                         date_minor_breaks = "1 week", date_labels = "%d-%b")
+
+grid.newpage()
+Case_Death1 <- arrangeGrob(cbind(ggplotGrob(NewCase_Date1 + theme(legend.position="none")), ggplotGrob(Death_Date1+ theme(legend.position="none")), size = "last"))
+grid.draw(Case_Death1)
+ggsave("Case_Death1.png", Case_Death, width = 50, height = 17, units = "cm")
+
+#Similarly for other waves
+```
+
+## Fitting Model
+```{r fitting_whole, message=FALSE, warning=FALSE, echo=FALSE}
+##########################Exponential for 1st wave
+#Infection modelling
+whittle(geo_cases_date1$new_cases_per_day, "Exponential", 1)$opt$par
+#Mortality modelling
+whittle(geo_deaths_date1$new_deaths_per_day, "Exponential", 1)$opt$par
+#Repeat for other waves
+
+##########################Power-law for 1st wave
+#Infection modelling
+whittle(geo_cases_date1$new_cases_per_day, "PowerLaw", 1)$opt$par
+#Mortality modelling
+whittle(geo_deaths_date1$new_deaths_per_day, "PowerLaw", 1)$opt$par
+#Repeat for other waves
+
+#########################Gaussian for 1st wave
+#Infection modelling
+gau_cases1 = NULL
+value1 = Inf
+for (i in 1:100) {
+  temp = whittle(geo_cases_date1$new_cases_per_day, "Gaussian", 1)
+  if (temp$opt$value < value1) {
+      gau_cases1 = temp
+      value1 = temp$opt$value
+  }
+}
+gau_cases1$par #results: 163.46304811   0.97701181   0.01000221   4.12891904
+
+#Mortality modelling
+gau_deaths1 = NULL
+value1 = Inf
+for (i in 1:100) {
+  temp = whittle(geo_deaths_date1$new_deaths_per_day, "Gaussian", 1)
+  if (temp$opt$value < value1) {
+      gau_deaths1 = temp
+      value1 = temp$opt$value
+  }
+}
+gau_deaths1$par #results: 14.6172738  0.9759815  1.9035884  0.5299262
+#due to the randomness in Gaussian kernel, the code might give slightly different value when running the codes again
+#Repeat for other waves 
+```
+
+## Goodness of fit for Gaussian kernel
+```{r goodness_whole_gau, message=FALSE, warning=FALSE, echo=FALSE}
+# This goodness of fit test is inspired based on Cheysson's code from: https://github.com/fcheysson/code-spectral-hawkes/tree/master/case%20study
+
+#Goodness of fit for 1st wave
+init = gau_cases1$par
+y = geo_cases_date1$new_cases_per_day
+n = length(y)
+Nsup = ceiling((n-1)/2)
+Ninf = - floor((n-1)/2)
+omega = 2 * pi * Ninf:Nsup / n
+
+kern = function(x) ifelse(abs(x) <= pi, 1.5 * (1.0 - (x / pi)^2), 0.0)
+kernh = function(x, h) kern(x / h)
+h = 0.10
+
+k = kernh(2* pi * 0:(n-1) / n, h)
+q = function(J) 1 / (n*h) * SuperGauss::toep.mult(k, J)
+
+I = Mod(fft(y - mean(y)))^2 / n
+I = c(I[(Nsup+2):n], I[1:(Nsup+1)])
+f = gau_cases1$kernel$f1(omega, trunc = 10L)
+S = 2*pi*sqrt(h) * sum( q(I/f - 1)^2 )
+
+n.sim = 1e3
+cl = makePSOCKcluster(3) # use multicore, set to the number of our cores
+clusterExport(cl, c("n", "Nsup", "omega", "h", "k", "f", "q", "init"))
+registerDoParallel(cl)
+Ss = foreach (i = icount(n.sim), .combine = c, .multicombine = TRUE, .inorder = FALSE,
+              .packages = c("SuperGauss", "hawkesbow")) %dopar% {
+                Iboots = f * rexp(n)
+                Iboots[n - Nsup] = f[n - Nsup] * rchisq(1, df = 1)
+                model = whittle_periodogram(c(Iboots[(n-Nsup+1):n], Iboots[1:(n-Nsup-1)]), 
+                                            kern = "gauss", binsize = 1, init = init)
+                fboots = model$f1(omega, trunc = 10L)
+                return( 2*pi*sqrt(h) * sum( q(Iboots/fboots - 1)^2 ) )
+              }
+stopCluster(cl)
+
+muh = 1/sqrt(h) * 12*pi/5
+tau2 = 2672*pi^2/385
+ plot(Ss)
+plot(z<-0:100, dnorm(z, mean = muh, sd = sqrt(tau2)), col=2, type="l")
+lines(density(Ss))
+abline(v=S, col="grey")
+cat("mean(Ss) = ", mean(Ss), " and     sd(Ss) = ", sd(Ss),
+    "\n     muh = ", muh,      " and sqrt(tau2) = ", sqrt(tau2), 
+    sep = "")
+c(muh - 1.96*sqrt(tau2), muh + 1.96*sqrt(tau2))
+
+#results:
+# > cat("mean(Ss) = ", mean(Ss), " and     sd(Ss) = ", sd(Ss),
+# +     "\n     muh = ", muh,      " and sqrt(tau2) = ", sqrt(tau2), 
+# +     sep = "")
+# mean(Ss) = 33.53907 and     sd(Ss) = 71.06017
+#      muh = 23.84301 and sqrt(tau2) = 8.276329
+# > c(muh - 1.96*sqrt(tau2), muh + 1.96*sqrt(tau2))
+# [1]  7.621407 40.064616
+
+#Repeat for other waves
+```
+
+
+# Dividing Israel into Areas: producing 'geo_area_loc.csv' file
+The below code is a part of creating 'geo_area_loc.csv' file, after this file was created I used Excel and 'geo_population.csv' to create the 'geo_area_loc_std.csv' file, which includes the standardised cases.
+```{r splti_into_areas, message=FALSE, warning=FALSE, echo=FALSE}
+#################################North Israel
+#Cases data
+geo_cases <- select(geo2, town_code, date, accumulated_cases, new_cases_on_date)
+geo_cases$accumulated_cases[geo_cases$accumulated_cases == '<15'] <- 15
+geo_cases$accumulated_cases <- as.numeric(geo_cases$accumulated_cases)
+
+######## Qiryat Shemona
+geo_cases_2800 <- geo_cases %>% filter(geo_cases$town_code == 2800) %>% 
+                            group_by(date) %>% 
+                            summarise(accumulated_cases = sum(accumulated_cases),.groups = 'drop')
+
+geo_cases_2800$new_cases_per_day <- geo_cases_2800$accumulated_cases
+for (i in 2:length(geo_cases_2800$accumulated_cases)) {
+  geo_cases_2800$new_cases_per_day[i] <- geo_cases_2800$accumulated_cases[i]-geo_cases_2800$accumulated_cases[i-1]
+}
+geo_cases_2800$seven_day_avg_case <- geo_cases_2800$new_cases_per_day
+for (i in 7:length(geo_cases_2800$new_cases_per_day)) {
+  geo_cases_2800$seven_day_avg_case[i] <- (geo_cases_2800$new_cases_per_day[i]+geo_cases_2800$new_cases_per_day[i-1]+geo_cases_2800$new_cases_per_day[i-2]+geo_cases_2800$new_cases_per_day[i-3]+geo_cases_2800$new_cases_per_day[i-4]+geo_cases_2800$new_cases_per_day[i-5]+geo_cases_2800$new_cases_per_day[i-6])/7
+}
+
+#Creating geo_area_loc data frame
+geo_area_loc <- select(geo_cases_2800, date)
+#Filling up dataframe
+geo_area_loc$area <- rep("North", 1174)
+geo_area_loc$town <- rep("Qiryat Shemona", 1174)
+geo_area_loc$daily_cases <- geo_cases_2800$new_cases_per_day
+geo_area_loc$avg_cases <- geo_cases_2800$seven_day_avg_case
+
+
+######## Afula
+geo_cases_7700 <- geo_cases %>% filter(geo_cases$town_code == 7700) %>% 
+                            group_by(date) %>% 
+                            summarise(accumulated_cases = sum(accumulated_cases),.groups = 'drop')
+
+geo_cases_7700$new_cases_per_day <- geo_cases_7700$accumulated_cases
+for (i in 2:length(geo_cases_7700$accumulated_cases)) {
+  geo_cases_7700$new_cases_per_day[i] <- geo_cases_7700$accumulated_cases[i]-geo_cases_7700$accumulated_cases[i-1]
+}
+geo_cases_7700$seven_day_avg_case <- geo_cases_7700$new_cases_per_day
+for (i in 7:length(geo_cases_7700$new_cases_per_day)) {
+  geo_cases_7700$seven_day_avg_case[i] <- (geo_cases_7700$new_cases_per_day[i]+geo_cases_7700$new_cases_per_day[i-1]+geo_cases_7700$new_cases_per_day[i-2]+geo_cases_7700$new_cases_per_day[i-3]+geo_cases_7700$new_cases_per_day[i-4]+geo_cases_7700$new_cases_per_day[i-5]+geo_cases_7700$new_cases_per_day[i-6])/7
+}
+#Summarise the data
+data_7700 <- data.frame(date = geo_cases_7700$date,
+                        area = rep("North",1174),
+                        town = rep("Afula",1174),
+                        daily_cases = geo_cases_7700$new_cases_per_day,
+                        avg_cases = geo_cases_7700$seven_day_avg_case)
+#Filling up dataframe
+geo_area_loc<- rbind(geo_area_loc, data_7700)
+
+
+####### Karmi'el
+geo_cases_1139 <- geo_cases %>% filter(geo_cases$town_code == 1139) %>% 
+                            group_by(date) %>% 
+                            summarise(accumulated_cases = sum(accumulated_cases),.groups = 'drop')
+
+geo_cases_1139$new_cases_per_day <- geo_cases_1139$accumulated_cases
+for (i in 2:length(geo_cases_1139$accumulated_cases)) {
+  geo_cases_1139$new_cases_per_day[i] <- geo_cases_1139$accumulated_cases[i]-geo_cases_1139$accumulated_cases[i-1]
+}
+geo_cases_1139$seven_day_avg_case <- geo_cases_1139$new_cases_per_day
+for (i in 7:length(geo_cases_1139$new_cases_per_day)) {
+  geo_cases_1139$seven_day_avg_case[i] <- (geo_cases_1139$new_cases_per_day[i]+geo_cases_1139$new_cases_per_day[i-1]+geo_cases_1139$new_cases_per_day[i-2]+geo_cases_1139$new_cases_per_day[i-3]+geo_cases_1139$new_cases_per_day[i-4]+geo_cases_1139$new_cases_per_day[i-5]+geo_cases_1139$new_cases_per_day[i-6])/7
+}
+
+data_1139 <- data.frame(date = geo_cases_1139$date,
+                        area = rep("North",1174),
+                        town = rep("Karmi'el",1174),
+                        daily_cases = geo_cases_1139$new_cases_per_day,
+                        avg_cases = geo_cases_1139$seven_day_avg_case)
+
+geo_area_loc<- rbind(geo_area_loc, data_1139)
+
+
+######## Haifa
+geo_cases_4000 <- geo_cases %>% filter(geo_cases$town_code == 4000) %>% 
+                            group_by(date) %>% 
+                            summarise(accumulated_cases = sum(accumulated_cases),.groups = 'drop')
+
+geo_cases_4000$new_cases_per_day <- geo_cases_4000$accumulated_cases
+for (i in 2:length(geo_cases_4000$accumulated_cases)) {
+  geo_cases_4000$new_cases_per_day[i] <- geo_cases_4000$accumulated_cases[i]-geo_cases_4000$accumulated_cases[i-1]
+}
+geo_cases_4000$seven_day_avg_case <- geo_cases_4000$new_cases_per_day
+for (i in 7:length(geo_cases_4000$new_cases_per_day)) {
+  geo_cases_4000$seven_day_avg_case[i] <- (geo_cases_4000$new_cases_per_day[i]+geo_cases_4000$new_cases_per_day[i-1]+geo_cases_4000$new_cases_per_day[i-2]+geo_cases_4000$new_cases_per_day[i-3]+geo_cases_4000$new_cases_per_day[i-4]+geo_cases_4000$new_cases_per_day[i-5]+geo_cases_4000$new_cases_per_day[i-6])/7
+}
+
+data_4000 <- data.frame(date = geo_cases_4000$date,
+                        area = rep("North",1174),
+                        town = rep("Haifa",1174),
+                        daily_cases = geo_cases_4000$new_cases_per_day,
+                        avg_cases = geo_cases_4000$seven_day_avg_case)
+
+geo_area_loc<- rbind(geo_area_loc, data_4000)
+
+#Similarly extracting data for other areas, then add them into geo_area_loc
+```
+
+To produce the plots presented in the thesis, we can use the 'geo_area_loc_std.csv' file directly.
+```{r load_area_loc, message=FALSE, warning=FALSE, echo=FALSE}
+geo_area_loc_std = import("geo_area_loc_std.csv", setclass = "tibble")
+geo_area_loc_std$date <- as.Date(geo_area_loc_std$date)
+```
+
+```{r plots_north, message=FALSE, warning=FALSE, echo=FALSE, fig.width=18, fig.height=6}
+######## North Israel over the whole pandemic
+#Seven-day average cases plots for North Israel
+Case_Date_North <- geo_area_loc_std %>%
+                      filter(area=="North") %>%
+        ggplot(aes(x = date)) + 
+        xlab("Date") + ylab("Daily Cases") +
+        ggtitle("Cases in Northern Israel \n (11 March 2020 - 28 May 2023)") +
+        theme(plot.title = element_text(lineheight=.8, face="bold"))  +
+        geom_line(aes(y=avg_cases, colour = town)) +
+        scale_x_date(date_breaks = "3 month",
+                     date_minor_breaks = "1 month", date_labels = "%b-%y")
+
+#Standardised average cases plot for North Israel
+Case_Date_North_std <- geo_area_loc_std %>%
+                      filter(area=="North") %>%
+        ggplot(aes(x = date)) + 
+        xlab("Date") + ylab("Standardised Daily Cases") +
+        ggtitle("Standardised Cases (per 100000 people) in Northern Israel \n (11 March 2020 - 28 May 2023)") +
+        theme(plot.title = element_text(lineheight=.8, face="bold"))  +
+        geom_line(aes(y=std_avg_cases, colour = town)) +
+        scale_x_date(date_breaks = "3 month",
+                     date_minor_breaks = "1 month", date_labels = "%b-%y")
+grid.newpage()
+Case_Date_North_with_std <- arrangeGrob(cbind(ggplotGrob(Case_Date_North+ theme(legend.position="none")), ggplotGrob(Case_Date_North_std), size = "last"))
+grid.draw(Case_Date_North_with_std)
+ggsave("Case_Date_North_with_std.png", Case_Date_North_with_std, width = 50, height = 17, units = "cm")
+
+
+########Plots for 1-4th wave North Israel without Big city (Haifa)
+#Seven-day average cases plots
+Case_Date_North_Loc1 <- geo_area_loc_std_old %>%
+                      filter(area=="North") %>%
+                      filter(date <= '2021-11-15') %>%
+        ggplot(aes(x = date)) + 
+        xlab("Date") + ylab("Daily Cases") +
+        ggtitle("Cases in Israel by Three Northern Towns \n (11 March 2020 - 15 Nov 2021)") +
+        theme(plot.title = element_text(lineheight=.8, face="bold"))  +
+        geom_line(aes(y=avg_cases, colour = town)) +
+        scale_x_date(date_breaks = "3 month",
+                     date_minor_breaks = "1 month", date_labels = "%b-%y")
+
+#Standardised average cases plot
+Case_Date_North_Loc_std1 <- geo_area_loc_std_old %>%
+                      filter(area=="North") %>%
+                      filter(date <= '2021-11-15') %>%
+        ggplot(aes(x = date)) + 
+        xlab("Date") + ylab("Standardised Daily Cases") +
+        ggtitle("Standardised Cases (per 100000 people) in Israel by Three Northern Towns \n (11 March 2020 - 15 Nov 2021)") +
+        theme(plot.title = element_text(lineheight=.8, face="bold"))  +
+        geom_line(aes(y=std_avg_cases, colour = town)) +
+        scale_x_date(date_breaks = "3 month",
+                     date_minor_breaks = "1 month", date_labels = "%b-%y")
+grid.newpage()
+Case_Date_North_Loc_with_std1 <- arrangeGrob(cbind(ggplotGrob(Case_Date_North_Loc1+ theme(legend.position="none")), ggplotGrob(Case_Date_North_Loc_std1), size = "last"))
+grid.draw(Case_Date_North_Loc_with_std1)
+ggsave("Case_Date_North_Loc_with_std1.png", Case_Date_North_Loc_with_std1, width = 50, height = 17, units = "cm")
+
+
+########Plots since 5th wave North Israel without Big city (Haifa)
+#Seven-day average cases plots
+Case_Date_North_Loc2 <- geo_area_loc_std_old %>%
+                      filter(area=="North") %>%
+                      filter(date > '2021-11-15') %>%
+        ggplot(aes(x = date)) + 
+        xlab("Date") + ylab("Daily Cases") +
+        ggtitle("Cases in Israel by Three Northern Towns \n (16 Nov 2021 - 28 May 2023)") +
+        theme(plot.title = element_text(lineheight=.8, face="bold"))  +
+        geom_line(aes(y=avg_cases, colour = town)) +
+        scale_x_date(date_breaks = "3 month",
+                     date_minor_breaks = "1 month", date_labels = "%b-%y")
+
+#Standardised average cases plot
+Case_Date_North_Loc_std2 <- geo_area_loc_std_old %>%
+                      filter(area=="North") %>%
+                      filter(date > '2021-11-15') %>%
+        ggplot(aes(x = date)) + 
+        xlab("Date") + ylab("Standardised Daily Cases") +
+        ggtitle("Standardised Cases (per 100000 people) in Israel by Three Northern Towns \n (16 Nov 2021 - 28 May 2023)") +
+        theme(plot.title = element_text(lineheight=.8, face="bold"))  +
+        geom_line(aes(y=std_avg_cases, colour = town)) +
+        scale_x_date(date_breaks = "3 month",
+                     date_minor_breaks = "1 month", date_labels = "%b-%y")
+grid.newpage()
+Case_Date_North_Loc_with_std2 <- arrangeGrob(cbind(ggplotGrob(Case_Date_North_Loc2+ theme(legend.position="none")), ggplotGrob(Case_Date_North_Loc_std2), size = "last"))
+grid.draw(Case_Date_North_Loc_with_std2)
+ggsave("Case_Date_North_Loc_with_std2.png", Case_Date_North_Loc_with_std2, width = 50, height = 17, units = "cm")
+
+#Similarly for other areas
+```
+
+# Selected Five Cities
+```{r plots_five, message=FALSE, warning=FALSE, echo=FALSE, fig.width=18, fig.height=6}
+######## Five Cities over the whole pandemic
+#Seven-day average cases plots for the selected Five Cities
+Case_Date_Location <- geo_area_loc_std %>%
+                      filter(town=="Haifa" | town=="Tel Aviv-Yafo" | town=="Jerusalem" | town=="Be'er Sheva" | town=="Lod") %>%
+        ggplot(aes(x = date)) + 
+        xlab("Date") + ylab("Daily Cases") +
+        ggtitle("Cases in Israel by Five Major Cities \n (11 March 2020 - 28 May 2023)") +
+        theme(plot.title = element_text(lineheight=.8, face="bold"))  +
+        geom_line(aes(y=avg_cases, colour = town)) +
+        scale_x_date(date_breaks = "3 month",
+                     date_minor_breaks = "1 month", date_labels = "%b-%y")
+
+#Standardised average cases plot for the selected Five Cities
+Case_Date_Location_std <- geo_area_loc_std %>%
+                      filter(town=="Haifa" | town=="Tel Aviv-Yafo" | town=="Jerusalem" | town=="Be'er Sheva" | town=="Lod") %>%
+        ggplot(aes(x = date)) + 
+        xlab("Date") + ylab("Standardised Daily Cases") +
+        ggtitle("Standardised Cases (per 100000 people) in Israel by Five Major Cities \n (11 March 2020 - 28 May 2023)") +
+        theme(plot.title = element_text(lineheight=.8, face="bold"))  +
+        geom_line(aes(y=std_avg_cases, colour = town)) +
+        scale_x_date(date_breaks = "3 month",
+                     date_minor_breaks = "1 month", date_labels = "%b-%y")
+grid.newpage()
+Case_Date_Location_with_std <- arrangeGrob(cbind(ggplotGrob(Case_Date_Location+ theme(legend.position="none")), ggplotGrob(Case_Date_Location_std), size = "last"))
+grid.draw(Case_Date_Location_with_std)
+ggsave("Case_Date_Location_with_std.png", Case_Date_Location_with_std, width = 50, height = 17, units = "cm")
+
+
+########Plots for 1-4th wave Five Cities
+#Seven-day average cases plots
+Case_Date_Location1 <- geo_area_loc_std %>%
+                      filter(town=="Haifa" | town=="Tel Aviv-Yafo" | town=="Jerusalem" | town=="Be'er Sheva" | town=="Lod") %>%
+                      filter(date <= '2021-11-15') %>%
+        ggplot(aes(x = date)) + 
+        xlab("Date") + ylab("Daily Cases") +
+        ggtitle("Cases in Israel by Five Major Cities \n (11 March 2020 - 15 Nov 2021)") +
+        theme(plot.title = element_text(lineheight=.8, face="bold"))  +
+        geom_line(aes(y=avg_cases, colour = town)) +
+        scale_x_date(date_breaks = "3 month",
+                     date_minor_breaks = "1 month", date_labels = "%b-%y")
+
+#Standardised average cases plot
+Case_Date_Location_std1 <- geo_area_loc_std %>%
+                      filter(town=="Haifa" | town=="Tel Aviv-Yafo" | town=="Jerusalem" | town=="Be'er Sheva" | town=="Lod") %>%
+                      filter(date <= '2021-11-15') %>%
+        ggplot(aes(x = date)) + 
+        xlab("Date") + ylab("Standardised Daily Cases") +
+        ggtitle("Standardised Cases (per 100000 people) in Israel by Five Major Cities \n (11 March 2020 - 15 Nov 2021)") +
+        theme(plot.title = element_text(lineheight=.8, face="bold"))  +
+        geom_line(aes(y=std_avg_cases, colour = town)) +
+        scale_x_date(date_breaks = "3 month",
+                     date_minor_breaks = "1 month", date_labels = "%b-%y")
+grid.newpage()
+Case_Date_Location_with_std1 <- arrangeGrob(cbind(ggplotGrob(Case_Date_Location1+ theme(legend.position="none")), ggplotGrob(Case_Date_Location_std1), size = "last"))
+grid.draw(Case_Date_Location_with_std1)
+ggsave("Case_Date_Location_with_std1.png", Case_Date_Location_with_std1, width = 50, height = 17, units = "cm")
+
+
+########Plots since 5th wave Five Cities
+#Seven-day average cases plots
+Case_Date_Location2 <- geo_area_loc_std %>%
+                      filter(town=="Haifa" | town=="Tel Aviv-Yafo" | town=="Jerusalem" | town=="Be'er Sheva" | town=="Lod") %>%
+                      filter(date > '2021-11-15') %>%
+        ggplot(aes(x = date)) + 
+        xlab("Date") + ylab("Daily Cases") +
+        ggtitle("Cases in Israel by Five Major Cities \n (16 Nov 2021 - 28 May 2023)") +
+        theme(plot.title = element_text(lineheight=.8, face="bold"))  +
+        geom_line(aes(y=avg_cases, colour = town)) +
+        scale_x_date(date_breaks = "3 month",
+                     date_minor_breaks = "1 month", date_labels = "%b-%y")
+
+#Standardised average cases plot
+Case_Date_Location_std2 <- geo_area_loc_std %>%
+                      filter(town=="Haifa" | town=="Tel Aviv-Yafo" | town=="Jerusalem" | town=="Be'er Sheva" | town=="Lod") %>%
+                      filter(date > '2021-11-15') %>%
+        ggplot(aes(x = date)) + 
+        xlab("Date") + ylab("Standardised Daily Cases") +
+        ggtitle("Standardised Cases (per 100000 people) in Israel by Five Major Cities \n (16 Nov 2021 - 28 May 2023)") +
+        theme(plot.title = element_text(lineheight=.8, face="bold"))  +
+        geom_line(aes(y=std_avg_cases, colour = town)) +
+        scale_x_date(date_breaks = "3 month",
+                     date_minor_breaks = "1 month", date_labels = "%b-%y")
+grid.newpage()
+Case_Date_Location_with_std2 <- arrangeGrob(cbind(ggplotGrob(Case_Date_Location2+ theme(legend.position="none")), ggplotGrob(Case_Date_Location_std2), size = "last"))
+grid.draw(Case_Date_Location_with_std2)
+ggsave("Case_Date_Location_with_std2.png", Case_Date_Location_with_std2, width = 50, height = 17, units = "cm")
+```
+
+## Fitting the five cities
+```{r splitting_five, message=FALSE, warning=FALSE, echo=FALSE}
+geo_five_cities <- geo_area_loc_std %>%
+                  filter(town=="Haifa" | town=="Tel Aviv-Yafo" | town=="Jerusalem" | town=="Be'er Sheva" | town=="Lod")
+
+#To fit a model we also need to split them into 6 waves
+geo_five_cities1 <- geo_five_cities %>%
+                   filter(date < '2020-5-16')
+geo_five_cities2 <- geo_five_cities %>%
+                   filter(between(date, as.Date('2020-5-16'), as.Date('2020-11-15')))
+geo_five_cities3 <- geo_five_cities %>%
+                   filter(between(date, as.Date('2020-11-16'), as.Date('2021-4-15')))
+geo_five_cities4 <- geo_five_cities %>%
+                   filter(between(date, as.Date('2021-6-16'), as.Date('2021-11-15')))
+geo_five_cities5 <- geo_five_cities %>%
+                   filter(between(date, as.Date('2021-12-16'), as.Date('2022-4-30')))
+geo_five_cities6 <- geo_five_cities %>%
+                   filter(date > '2022-5-31')
+```
+
+```{r fitting_five, message=FALSE, warning=FALSE, echo=FALSE}
+############################# Jerusalem
+#Getting Jerusalem data
+geo_five_cities1_3000 <- geo_five_cities1 %>%
+                  filter(town=="Jerusalem")
+geo_five_cities2_3000 <- geo_five_cities2 %>%
+                  filter(town=="Jerusalem")
+geo_five_cities3_3000 <- geo_five_cities3 %>%
+                  filter(town=="Jerusalem")
+geo_five_cities4_3000 <- geo_five_cities4 %>%
+                  filter(town=="Jerusalem")
+geo_five_cities5_3000 <- geo_five_cities5 %>%
+                  filter(town=="Jerusalem")
+geo_five_cities6_3000 <- geo_five_cities6 %>%
+                  filter(town=="Jerusalem")
+
+
+########Fitting 1st wave
+gau_cases1_3000 = NULL
+value1_3000 = Inf
+for (i in 1:100) {
+  temp = whittle(geo_five_cities1_3000$avg_cases, "Gaussian", 1)
+  if (temp$opt$value < value1_3000) {
+      gau_cases1_3000 = temp
+      value1_3000 = temp$opt$value
+  }
+}
+gau_cases1_3000$par #results: 1.65208022 0.99000000 1.53284253 0.05620799
+
+
+########Fitting 2nd wave
+gau_cases2_3000 = NULL
+value2_3000 = Inf
+for (i in 1:100) {
+  temp = whittle(geo_five_cities2_3000$avg_cases, "Gaussian", 1)
+  if (temp$opt$value < value2_3000) {
+      gau_cases2_3000 = temp
+      value2_3000 = temp$opt$value
+  }
+}
+gau_cases2_3000$par #results: 0.4203269 0.9900000 0.1551308 0.5138064
+
+
+########Fitting 3rd wave
+gau_cases3_3000 = NULL
+value3_3000 = Inf
+for (i in 1:100) {
+  temp = whittle(geo_five_cities3_3000$avg_cases, "Gaussian", 1)
+  if (temp$opt$value < value3_3000) {
+      gau_cases3_3000 = temp
+      value3_3000 = temp$opt$value
+  }
+}
+gau_cases3_3000$par #results: 0.9862177 0.9900000 0.0100000 1.4254454
+
+
+########Fitting 4th wave
+gau_cases4_3000 = NULL
+value4_3000 = Inf
+for (i in 1:100) {
+  temp = whittle(geo_five_cities4_3000$avg_cases, "Gaussian", 1)
+  if (temp$opt$value < value4_3000) {
+      gau_cases4_3000 = temp
+      value4_3000 = temp$opt$value
+  }
+}
+gau_cases4_3000$par #results: 0.3950601 0.9900000 0.1768107 0.5795835
+
+
+########Fitting 5th wave
+gau_cases5_3000 = NULL
+value5_3000 = Inf
+for (i in 1:100) {
+  temp = whittle(geo_five_cities5_3000$avg_cases, "Gaussian", 1)
+  if (temp$opt$value < value5_3000) {
+      gau_cases5_3000 = temp
+      value5_3000 = temp$opt$value
+  }
+}
+gau_cases5_3000$par #results: 11.6837766  0.9900000  0.0100000  0.8081723
+
+
+########Fitting 6th wave
+gau_cases6_3000 = NULL
+value6_3000 = Inf
+for (i in 1:100) {
+  temp = whittle(geo_five_cities6_3000$avg_cases, "Gaussian", 1)
+  if (temp$opt$value < value6_3000) {
+      gau_cases6_3000 = temp
+      value6_3000 = temp$opt$value
+  }
+}
+gau_cases6_3000$par #results: 0.214170 0.990000 0.010000 2.484289
+
+#due to the randomness in Gaussian kernel, the code might give slightly different value when running the codes again
+#Repeat for other cities
+```
+
+
+
